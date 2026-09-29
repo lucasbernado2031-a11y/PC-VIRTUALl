@@ -1,0 +1,263 @@
+name: 🖥️ PC Virtual - @alves7.pcm
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: "Número da instância"
+        required: true
+        default: "1"
+        type: string
+
+jobs:
+  virtual-pc:
+    name: 🖥️ PC Virtual ${{ inputs.instance_number }}
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # ============================================================
+      # INFORMAÇÕES DO PC
+      # ============================================================
+      - name: 🟢 Iniciar PC Virtual
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║       🖥️ PC CRIADO PELO @alves7.pcm       ║" -ForegroundColor Cyan
+          Write-Host "╠════════════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║        VIRTUAL WINDOWS GAMING PC           ║" -ForegroundColor Cyan
+          Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host ""
+
+          Write-Host "Instância: ${{ inputs.instance_number }}" -ForegroundColor Yellow
+          Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Yellow
+          Write-Host "Sistema: $env:RUNNER_OS" -ForegroundColor Yellow
+
+      - name: ⚙️ Verificar hardware
+        shell: powershell
+        run: |
+          Write-Host "===== HARDWARE =====" -ForegroundColor Cyan
+
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object @{N="RAM_GB";E={[math]::Round($_.TotalPhysicalMemory / 1GB, 2)}}
+
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion
+
+          Get-PSDrive C |
+            Select-Object Used, Free
+
+      # ============================================================
+      # RDP
+      # ============================================================
+      - name: 🔐 Ativar Remote Desktop
+        shell: powershell
+        run: |
+          Write-Host "Ativando Remote Desktop..." -ForegroundColor Green
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Write-Host "RDP ativado!" -ForegroundColor Green
+
+      # ============================================================
+      # USUÁRIO
+      # ============================================================
+      - name: 👤 Criar usuário do PC
+        shell: powershell
+        env:
+          PC_PASSWORD: ${{ secrets.PC_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PC_PASSWORD)) {
+            Write-Error "Configure o secret PC_PASSWORD antes de executar o workflow."
+            exit 1
+          }
+
+          $password = ConvertTo-SecureString `
+            $env:PC_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $user = Get-LocalUser -Name "VirtualPC" -ErrorAction SilentlyContinue
+
+          if (-not $user) {
+            New-LocalUser `
+              -Name "VirtualPC" `
+              -Password $password `
+              -AccountNeverExpires
+          }
+          else {
+            Set-LocalUser `
+              -Name "VirtualPC" `
+              -Password $password
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "VirtualPC" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Usuário VirtualPC configurado." -ForegroundColor Green
+
+      # ============================================================
+      # TAILSCALE
+      # ============================================================
+      - name: 🌐 Instalar Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+
+          Write-Host "Baixando Tailscale..." -ForegroundColor Cyan
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i `"$installer`" /quiet /norestart" `
+            -Wait
+
+          Remove-Item $installer -Force
+
+          Write-Host "Tailscale instalado." -ForegroundColor Green
+
+      - name: 🔗 Conectar Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+            Write-Error "Configure o secret TAILSCALE_AUTH_KEY."
+            exit 1
+          }
+
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          & $tailscale up `
+            --auth-key="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="alves7-pc-${{ inputs.instance_number }}-${{ github.run_id }}"
+
+          Start-Sleep -Seconds 10
+
+      # ============================================================
+      # PEGAR IP
+      # ============================================================
+      - name: 📡 Obter endereço do PC
+        shell: powershell
+        run: |
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          $ip = (& $tailscale ip -4 | Select-Object -First 1).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            Write-Error "Não foi possível obter o IP do Tailscale."
+            exit 1
+          }
+
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Green
+          Write-Host "║          🖥️ PC VIRTUAL ONLINE             ║" -ForegroundColor Green
+          Write-Host "╠════════════════════════════════════════════╣" -ForegroundColor Green
+          Write-Host "║ Criado por: @alves7.pcm                   ║" -ForegroundColor White
+          Write-Host "║ IP: $ip" -ForegroundColor White
+          Write-Host "║ Usuário: VirtualPC                         ║" -ForegroundColor White
+          Write-Host "║ Porta: 3389                                ║" -ForegroundColor White
+          Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Green
+          Write-Host ""
+
+      # ============================================================
+      # PROGRAMAS
+      # ============================================================
+      - name: 🌎 Instalar Chrome
+        shell: powershell
+        run: |
+          winget install `
+            --id Google.Chrome `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+      - name: 📦 Instalar 7-Zip
+        shell: powershell
+        run: |
+          winget install `
+            --id 7zip.7zip `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+      # ============================================================
+      # TESTAR RDP
+      # ============================================================
+      - name: 🧪 Testar conexão RDP
+        shell: powershell
+        run: |
+          Write-Host "Testando porta RDP..." -ForegroundColor Cyan
+
+          $result = Test-NetConnection `
+            -ComputerName "127.0.0.1" `
+            -Port 3389
+
+          if ($result.TcpTestSucceeded) {
+            Write-Host "RDP está funcionando!" -ForegroundColor Green
+          }
+          else {
+            Write-Error "A porta RDP não respondeu."
+            exit 1
+          }
+
+      # ============================================================
+      # MANTER ONLINE
+      # ============================================================
+      - name: ♾️ Manter PC online
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "🖥️ PC VIRTUAL DO @alves7.pcm ONLINE" -ForegroundColor Green
+          Write-Host "IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+          Write-Host "Usuário: VirtualPC" -ForegroundColor Cyan
+          Write-Host "Tempo máximo: 6 horas" -ForegroundColor Yellow
+          Write-Host ""
+
+          $i = 0
+
+          while ($true) {
+
+            $i++
+
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] PC online - Heartbeat $i" `
+              -ForegroundColor Green
+
+            $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+            $status = & $tailscale status 2>&1
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Tailscale desconectado. Tentando reconectar..." `
+                -ForegroundColor Yellow
+
+              & $tailscale up `
+                --auth-key="${{ secrets.TAILSCALE_AUTH_KEY }}" `
+                --hostname="alves7-pc-${{ inputs.instance_number }}-${{ github.run_id }}"
+            }
+
+            Start-Sleep -Seconds 60
+          }
